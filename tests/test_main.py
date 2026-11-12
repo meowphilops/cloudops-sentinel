@@ -1,7 +1,11 @@
-from fastapi.testclient import TestClient
+
 from unittest.mock import patch
-from app.main import cpu_alert_tracker
-from app.main import app
+
+from fastapi.testclient import TestClient
+
+from app.main import app, cpu_alert_tracker
+from app.prometheus_client import PrometheusClientError
+
 
 client = TestClient(app)
 
@@ -92,3 +96,138 @@ def test_metrics_endpoint_resets_alert_after_low_cpu():
     assert cpu_alert_tracker.consecutive_high_count == 1
 
     cpu_alert_tracker.consecutive_high_count = 0
+
+
+def test_analyze_endpoint_healthy_system():
+    with patch("app.main.psutil.cpu_percent", return_value=40), \
+         patch("app.main.psutil.virtual_memory") as mock_memory, \
+         patch("app.main.fetch_active_alerts", return_value=[]):
+
+        mock_memory.return_value.percent = 60
+
+        response = client.get("/analyze")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["project"] == "CloudOps Sentinel"
+    assert data["prometheus_status"] == "connected"
+    assert data["analysis"]["status"] == "healthy"
+    assert data["analysis"]["incident_count"] == 0
+
+
+def test_analyze_endpoint_detects_high_cpu():
+    with patch("app.main.psutil.cpu_percent", return_value=92), \
+         patch("app.main.psutil.virtual_memory") as mock_memory, \
+         patch("app.main.fetch_active_alerts", return_value=[]):
+
+        mock_memory.return_value.percent = 60
+
+        response = client.get("/analyze")
+
+    assert response.status_code == 200
+
+    data = response.json()
+    incident = data["analysis"]["incidents"][0]
+
+    assert data["analysis"]["incident_count"] == 1
+    assert incident["resource"] == "CPU"
+    assert incident["severity"] == "warning"
+
+
+def test_analyze_endpoint_detects_critical_memory():
+    with patch("app.main.psutil.cpu_percent", return_value=40), \
+         patch("app.main.psutil.virtual_memory") as mock_memory, \
+         patch("app.main.fetch_active_alerts", return_value=[]):
+
+        mock_memory.return_value.percent = 96
+
+        response = client.get("/analyze")
+
+    assert response.status_code == 200
+
+    data = response.json()
+    incident = data["analysis"]["incidents"][0]
+
+    assert data["analysis"]["incident_count"] == 1
+    assert incident["resource"] == "Memory"
+    assert incident["severity"] == "critical"
+
+
+def test_analyze_endpoint_detects_multiple_incidents():
+    with patch("app.main.psutil.cpu_percent", return_value=98), \
+         patch("app.main.psutil.virtual_memory") as mock_memory, \
+         patch("app.main.fetch_active_alerts", return_value=[]):
+
+        mock_memory.return_value.percent = 97
+
+        response = client.get("/analyze")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["analysis"]["status"] == "incident_detected"
+    assert data["analysis"]["incident_count"] == 2
+
+    resources = [
+        incident["resource"]
+        for incident in data["analysis"]["incidents"]
+    ]
+
+    assert "CPU" in resources
+    assert "Memory" in resources
+
+
+def test_analyze_endpoint_includes_prometheus_alerts():
+    alerts = [
+        {
+            "labels": {
+                "alertname": "HighCPUUsage",
+                "severity": "warning",
+            },
+            "annotations": {
+                "summary": "High CPU usage detected",
+                "description": "CPU exceeded 85% for 1 minute.",
+            },
+            "state": "firing",
+        }
+    ]
+
+    with patch("app.main.psutil.cpu_percent", return_value=40), \
+         patch("app.main.psutil.virtual_memory") as mock_memory, \
+         patch("app.main.fetch_active_alerts", return_value=alerts):
+
+        mock_memory.return_value.percent = 60
+
+        response = client.get("/analyze")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["prometheus_status"] == "connected"
+    assert data["analysis"]["prometheus_alert_count"] == 1
+    assert data["analysis"]["prometheus_alerts"][0]["alert_name"] == "HighCPUUsage"
+    assert data["analysis"]["prometheus_alerts"][0]["state"] == "firing"
+
+
+def test_analyze_endpoint_handles_prometheus_unavailable():
+    with patch("app.main.psutil.cpu_percent", return_value=40), \
+         patch("app.main.psutil.virtual_memory") as mock_memory, \
+         patch(
+             "app.main.fetch_active_alerts",
+             side_effect=PrometheusClientError("Connection refused"),
+         ):
+
+        mock_memory.return_value.percent = 60
+
+        response = client.get("/analyze")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["prometheus_status"] == "unavailable"
+    assert data["analysis"]["status"] == "healthy"

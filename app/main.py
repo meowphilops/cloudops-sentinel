@@ -1,9 +1,12 @@
-
 import psutil
 from fastapi import FastAPI
 from fastapi.responses import Response
+from app.incident_analyzer import analyze_incident
 from prometheus_client import Gauge, generate_latest, CONTENT_TYPE_LATEST
-
+from app.prometheus_client import (
+    fetch_active_alerts,
+    PrometheusClientError,
+)
 from app.alerts import CPUAlertTracker
 
 app = FastAPI(
@@ -67,6 +70,34 @@ def system_metrics():
         "alert": alert,
     }
 
+@app.get("/analyze")
+def analyze_system():
+    # Collect local system metrics
+    cpu_percent = psutil.cpu_percent(interval=1)
+    memory = psutil.virtual_memory()
+
+    # Fetch alerts from Prometheus
+    prometheus_status = "connected"
+
+    try:
+        prometheus_alerts = fetch_active_alerts()
+
+    except PrometheusClientError:
+        prometheus_alerts = []
+        prometheus_status = "unavailable"
+
+    # Generate combined diagnostic report
+    report = analyze_incident(
+        cpu_percent=cpu_percent,
+        memory_percent=memory.percent,
+        prometheus_alerts=prometheus_alerts,
+    )
+
+    return {
+        "project": "CloudOps Sentinel",
+        "prometheus_status": prometheus_status,
+        "analysis": report,
+    }
 
 @app.get("/metrics")
 def prometheus_metrics():
