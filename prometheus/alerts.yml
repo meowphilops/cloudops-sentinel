@@ -1,0 +1,20 @@
+groups:
+  - name: infrastructure-alerts
+    rules:
+      - alert: HighCPUUsage
+        expr: cloudops_cpu_usage_percent > 85
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage has remained above 85% for 1 minute."
+
+      - alert: HighMemoryUsage
+        expr: cloudops_memory_usage_percent > 90
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage has remained above 90% for 1 minute."
