@@ -1,4 +1,4 @@
-
+from app.main import remediation_manager
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -231,3 +231,142 @@ def test_analyze_endpoint_handles_prometheus_unavailable():
 
     assert data["prometheus_status"] == "unavailable"
     assert data["analysis"]["status"] == "healthy"
+
+
+def test_create_remediation_proposal():
+    response = client.post(
+        "/remediation/propose",
+        json={
+            "action": "restart_demo_service",
+            "reason": "Testing API approval workflow.",
+        },
+    )
+
+    assert response.status_code == 201
+
+    data = response.json()
+
+    assert data["action"] == "restart_demo_service"
+    assert data["status"] == "pending"
+    assert data["result"] is None
+
+
+def test_reject_unknown_remediation_action():
+    response = client.post(
+        "/remediation/propose",
+        json={
+            "action": "execute_shell_command",
+            "reason": "Testing unauthorized action.",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_reject_remediation_without_reason():
+    response = client.post(
+        "/remediation/propose",
+        json={
+            "action": "restart_demo_service",
+            "reason": "   ",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_list_pending_remediations():
+    response = client.post(
+        "/remediation/propose",
+        json={
+            "action": "restart_demo_service",
+            "reason": "Testing pending list.",
+        },
+    )
+
+    proposal_id = response.json()["id"]
+
+    pending_response = client.get("/remediation/pending")
+
+    assert pending_response.status_code == 200
+
+    data = pending_response.json()
+
+    assert data["pending_count"] >= 1
+    assert any(
+        proposal["id"] == proposal_id
+        for proposal in data["proposals"]
+    )
+
+
+def test_approve_remediation_through_api():
+    proposal_response = client.post(
+        "/remediation/propose",
+        json={
+            "action": "restart_demo_service",
+            "reason": "Testing approved execution.",
+        },
+    )
+
+    proposal_id = proposal_response.json()["id"]
+
+    response = client.post(
+        f"/remediation/{proposal_id}/approve"
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["status"] == "executed"
+    assert data["result"]["execution_mode"] == "simulated"
+
+
+def test_reject_remediation_through_api():
+    proposal_response = client.post(
+        "/remediation/propose",
+        json={
+            "action": "restart_demo_service",
+            "reason": "Testing rejection through API.",
+        },
+    )
+
+    proposal_id = proposal_response.json()["id"]
+
+    response = client.post(
+        f"/remediation/{proposal_id}/reject"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+
+
+def test_approve_unknown_remediation_through_api():
+    response = client.post(
+        "/remediation/unknown-id/approve"
+    )
+
+    assert response.status_code == 404
+
+
+def test_approve_remediation_twice_through_api():
+    proposal_response = client.post(
+        "/remediation/propose",
+        json={
+            "action": "restart_demo_service",
+            "reason": "Testing duplicate API approval.",
+        },
+    )
+
+    proposal_id = proposal_response.json()["id"]
+
+    first_response = client.post(
+        f"/remediation/{proposal_id}/approve"
+    )
+
+    second_response = client.post(
+        f"/remediation/{proposal_id}/approve"
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
